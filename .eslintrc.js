@@ -18,6 +18,7 @@ module.exports = {
       {
         allowString: false,
         allowNumber: false,
+        consistentReturn: false,
       },
     ],
   },
