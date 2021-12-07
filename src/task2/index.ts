@@ -4,28 +4,17 @@ import csvToJson from 'csvtojson';
 import { mkdirSafelySync } from '../utils';
 
 import './env';
+import { CONVERTING_OPTIONS, getLogger, getTimeLabel, onError, READ_STREAM_OPTIONS } from '../task2common';
 
 const CSV_DIR = path.join(__dirname, 'csv');
 const OUTPUT_DIR = path.join(__dirname, 'output');
 
 const CSV_FILE_PATH = path.join(CSV_DIR, 'data.csv');
-export const READ_STREAM_OPTIONS = { highWaterMark: 16 };
-export const CONVERTING_OPTIONS = {
-  delimiter: ';',
-  checkType: true,
-};
+
 
 const readStream = createReadStream(CSV_FILE_PATH, READ_STREAM_OPTIONS);
 mkdirSafelySync(OUTPUT_DIR);
 const writeStream = createWriteStream(path.join(OUTPUT_DIR, 'data-file.txt'));
-
-export const getTimeLabel = (label: string) => `\nEND writing ${label}`;
-
-export const onError = (e: Error | null | undefined) => {
-  console.error(e);
-};
-
-export const getLogger = (label: string, counter: number) => () => console.log(`${label} chunk ${++counter}`);
 
 console.log('\n');
 

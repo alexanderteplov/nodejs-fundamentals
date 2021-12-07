@@ -1,112 +1,94 @@
-import { createReadStream, createWriteStream } from 'fs';
+import { createReadStream, createWriteStream, WriteStream } from 'fs';
+import { Stream, StreamOptions, Transform, Writable } from 'stream';
 import path from 'path';
 import csvToJson from 'csvtojson';
 
-import {
-  READ_STREAM_OPTIONS,
-  CONVERTING_OPTIONS,
-  getTimeLabel,
-  getLogger,
-  onError,
-} from '../task2';
 import { mkdirSafelySync } from '../utils';
-
 import './env';
+import { CONVERTING_OPTIONS, getLogger, getTimeLabel, onError } from '../task2common';
+import { pipeline } from 'stream/promises';
 
 const CSV_DIR = path.join(__dirname, 'csv');
 const OUTPUT_DIR = path.join(__dirname, 'output');
 
 const CSV_FILE_PATH = path.join(CSV_DIR, 'data.csv');
 
-const readStream1 = createReadStream(CSV_FILE_PATH, READ_STREAM_OPTIONS);
-const readStream2 = createReadStream(CSV_FILE_PATH, READ_STREAM_OPTIONS);
-const readStream3 = createReadStream(CSV_FILE_PATH, READ_STREAM_OPTIONS);
+const getStreamOptions = (highWaterMark: number) => ({
+  highWaterMark,
+  objectMode: true,
+}) as StreamOptions<Stream>;
+
 mkdirSafelySync(OUTPUT_DIR);
-const writeFile1Stream = createWriteStream(path.join(OUTPUT_DIR, 'data-file-1.txt'));
-const writeFile2Stream = createWriteStream(path.join(OUTPUT_DIR, 'data-file-2.txt'));
-const writeFile3Stream = createWriteStream(path.join(OUTPUT_DIR, 'data-file-3.txt'));
-const writeDbMockStream = createWriteStream(path.join(OUTPUT_DIR, 'data-db-mock.json'));
+const readStream = createReadStream(CSV_FILE_PATH, getStreamOptions(16));
+const writeFileStream = createWriteStream(path.join(OUTPUT_DIR, 'data-file.txt'), getStreamOptions(4));
 
-const commonLabel = 'all 4 tasks';
-console.time(getTimeLabel(commonLabel));
-console.log('\n');
-
-
-const promise1 = new Promise((resolve) => {
-  const label = 'file (with 2 pipe)';
-  console.time(getTimeLabel(label));
-  let i = 0;
-  readStream1
-    .on('data', getLogger(label, i))
-    .on('error', onError)
-    .on('end', () => {
-      console.timeEnd(getTimeLabel(label));
-      resolve(0);
-    })
-    .pipe(csvToJson(CONVERTING_OPTIONS))
-    .pipe(writeFile1Stream);
+const transformStream = new Transform({
+  transform: (json: Record<string, string>, _, callback) => {
+    const formattedJson = Object.entries(json).reduce((acc, [key, value]) => {
+      acc[key.toLowerCase()] = value;
+      return acc;
+    }, {} as Record<string, string>);
+    callback(null, JSON.stringify(formattedJson) + '\n');
+  },
+  highWaterMark: 4,
+  writableObjectMode: true,
 });
 
-const promise2 = new Promise((resolve) => {
-  const label = 'file (with csvToJson.fromStream and pipe)';
-  console.time(getTimeLabel(label));
-  let i = 0;
-  csvToJson(CONVERTING_OPTIONS, READ_STREAM_OPTIONS)
-    .on('data', getLogger(label, i))
-    .on('error', onError)
-    .on('end', () => {
-      console.timeEnd(getTimeLabel(label));
-      resolve(0);
-    })
-    .fromStream(readStream2)
-    .pipe(writeFile2Stream);
-});
-
-const promise3 = (async () => {
-  const label = 'csv file (by iterating over readable stream)';
-  console.time(getTimeLabel(label));
-  let i = 0;
-  try {
-    for await (const chunk of readStream3) {
-      writeFile3Stream.write(chunk);
-      getLogger(label, i++)();
+let j = 0;
+const writeToDbPromisifiedMockFunction = (data: any) => new Promise((resolve, reject) => {
+  setTimeout(() => {
+    if (Math.random() < 0.1) {
+      reject('Error writing DB');
+    } else {
+      resolve(data);
+      console.log(getLogger('DB', j++)());
     }
-  } catch (e) {
-    console.error(e)
-  }
-  console.timeEnd(getTimeLabel(label));
-})();
-
-const promise4 = new Promise(async (resolve) => {
-  const label = 'DB';
-  console.time(getTimeLabel(label));
-  let i = 0;
-  await csvToJson(CONVERTING_OPTIONS, READ_STREAM_OPTIONS)
-    .fromFile(CSV_FILE_PATH, READ_STREAM_OPTIONS)
-    .subscribe((json) => {
-      return new Promise((resolveChunk, rejectChunk) => {
-        writeDbMockStream.write(JSON.stringify(json) + '\n', (error) => {
-          if (error) {
-            rejectChunk(error);
-          } else {
-            resolveChunk(json);
-            getLogger(label, i++)();
-          }
-        })
-      })
-    }, onError, () => {
-      console.timeEnd(getTimeLabel(label));
-      resolve(0);
-    });
+  }, 2);
 });
 
-await Promise.allSettled([
-  promise1,
-  promise2,
-  promise3,
-  promise4,
-]);
+let lastDbWritePromise: Promise<any> | null = null;
+const writeDbStream = new Transform({
+  transform: async (chunk: any, _, callback) => {
+    callback(null, chunk);
+    lastDbWritePromise = writeToDbPromisifiedMockFunction(chunk).catch(onError);
+  },
+  highWaterMark: 4,
+  readableObjectMode: true,
+}).on('end', () => {
+  lastDbWritePromise!
+    .then(() => console.timeEnd(getTimeLabel('DB')));
+});
 
-console.timeEnd(getTimeLabel(commonLabel));
+let i = 0;
+const writeFileAndLogToConsoleStream = new Writable({
+  write(chunk, _, callback) {
+    if (writeFileStream.write(chunk)) {
+      console.log(getLogger('file', i++)());
+      process.nextTick(callback);
+    } else {
+      writeFileStream.once('drain', this.write);
+    }
+  }
+})
+  .on('finish', () => console.timeEnd(getTimeLabel('file')))
+  .on('error', onError);
+
+console.log('\n');
+console.time(getTimeLabel('all'));
+console.time(getTimeLabel('file'));
+console.time(getTimeLabel('DB'));
+
+try {
+  await pipeline(
+    readStream,
+    csvToJson(CONVERTING_OPTIONS, getStreamOptions(16)),
+    transformStream,
+    writeDbStream,
+    writeFileAndLogToConsoleStream,
+  )
+} catch (error) {
+  console.error(error);
+};
 
 console.log('\nAll tasks are finished...');
+console.timeEnd(getTimeLabel('all'));

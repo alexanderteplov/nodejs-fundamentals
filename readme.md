@@ -13,3 +13,4 @@ Currently available commands:
 - `npm start --task=1`
 - `npm start --task=2`
 - `npm start --task=2a`
+- `npm start --task=2async`
